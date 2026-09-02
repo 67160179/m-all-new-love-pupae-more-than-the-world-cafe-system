@@ -1,14 +1,10 @@
-const pool = require("../db/db");
+const pool = require("../config/db");
+const orderModel = require("../models/orderModel");
+const stockModel = require("../models/stockModel");
+const discountModel = require("../models/discountModel");
 
 const VALID_PAYMENT_METHODS = ["cash", "qr"];
 
-/**
- * POST /api/orders
- * UC-01 "รับออเดอร์และคำนวณราคา"
- *   - US-01: คำนวณราคารวม, สร้างออเดอร์ + เลขคิว
- *   - US-02: ตรวจสอบและคำนวณส่วนลดจากรหัสส่วนลด (Alternative Flow 4a)
- *   - US-03: เช็คสต็อกก่อนอนุญาตให้เพิ่มสินค้าในออเดอร์ (Exception Flow 2a)
- */
 exports.createOrder = async (req, res) => {
   const { items, paymentMethod, discountCode } = req.body;
 
@@ -31,7 +27,7 @@ exports.createOrder = async (req, res) => {
 
   // ---- ราคาต้องมากกว่า 0 ----
   const hasInvalidPrice = items.some(
-    (item) => typeof item.price !== "number" || item.price <= 0,
+    (item) => !Number.isFinite(item.price) || item.price <= 0,
   );
   if (hasInvalidPrice) {
     return res.status(400).json({ error: "ราคาสินค้าต้องมากกว่า 0" });
@@ -55,13 +51,7 @@ exports.createOrder = async (req, res) => {
   try {
     // ---- US-03: เช็คสต็อกทุกรายการก่อนอนุญาตให้เพิ่มลงออเดอร์ (Exception 2a) ----
     for (const item of items) {
-      const [stockRows] = await connection.query(
-        "SELECT quantity FROM stock WHERE item_name = ?",
-        [item.name],
-      );
-
-      // ถ้าไม่มีเมนูนี้ในตาราง stock เลย ถือว่าไม่พร้อมจำหน่ายเช่นกัน
-      const availableQty = stockRows.length > 0 ? stockRows[0].quantity : 0;
+      const availableQty = await stockModel.getQuantity(connection, item.name);
 
       if (availableQty < item.quantity) {
         return res.status(409).json({
@@ -81,59 +71,37 @@ exports.createOrder = async (req, res) => {
     let appliedDiscountCode = null;
 
     if (discountCode !== undefined && discountCode !== null && discountCode !== "") {
-      const [codeRows] = await connection.query(
-        "SELECT code, percent_off, expires_at FROM discount_codes WHERE code = ?",
-        [discountCode],
-      );
+      const discountRow = await discountModel.findByCode(connection, discountCode);
 
-      const isExpired = (row) =>
-        row.expires_at !== null && new Date(row.expires_at) < new Date();
-
-      if (codeRows.length === 0 || isExpired(codeRows[0])) {
+      if (!discountRow || discountModel.isExpired(discountRow)) {
         return res
           .status(400)
           .json({ error: "รหัสส่วนลดไม่ถูกต้องหรือหมดอายุ" });
       }
 
-      appliedDiscountCode = codeRows[0].code;
-      discountAmount = +(
-        (subtotalAmount * codeRows[0].percent_off) /
-        100
-      ).toFixed(2);
+      appliedDiscountCode = discountRow.code;
+      discountAmount = +((subtotalAmount * discountRow.percent_off) / 100).toFixed(2);
     }
 
     const totalAmount = +(subtotalAmount - discountAmount).toFixed(2);
 
     // ---- หมายเลขคิว: ใช้จำนวนออเดอร์ที่มีอยู่ + 1 อย่างง่ายสำหรับ sprint นี้ ----
-    const [countRows] = await connection.query(
-      "SELECT COUNT(*) AS total FROM orders",
-    );
-    const queueNumber = countRows[0].total + 1;
+    const currentOrderCount = await orderModel.countAll(connection);
+    const queueNumber = currentOrderCount + 1;
 
     await connection.beginTransaction();
 
-    const [orderResult] = await connection.query(
-      `INSERT INTO orders
-        (queue_number, payment_method, discount_code, subtotal_amount, discount_amount, total_amount)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        queueNumber,
-        paymentMethod,
-        appliedDiscountCode,
-        subtotalAmount,
-        discountAmount,
-        totalAmount,
-      ],
-    );
-
-    const orderId = orderResult.insertId;
+    const orderId = await orderModel.create(connection, {
+      queueNumber,
+      paymentMethod,
+      discountCode: appliedDiscountCode,
+      subtotalAmount,
+      discountAmount,
+      totalAmount,
+    });
 
     for (const item of items) {
-      await connection.query(
-        `INSERT INTO order_items (order_id, name, price, quantity)
-         VALUES (?, ?, ?, ?)`,
-        [orderId, item.name, item.price, item.quantity],
-      );
+      await orderModel.addItem(connection, orderId, item);
     }
 
     await connection.commit();
@@ -164,9 +132,7 @@ exports.createOrder = async (req, res) => {
  */
 exports.getAllOrders = async (req, res) => {
   try {
-    const [orders] = await pool.query(
-      "SELECT * FROM orders ORDER BY created_at DESC",
-    );
+    const orders = await orderModel.findAll();
     return res.json(orders);
   } catch (error) {
     console.error("getAllOrders error:", error);

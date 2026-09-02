@@ -1,7 +1,3 @@
--- schema.sql
--- รันไฟล์นี้เพื่อสร้างฐานข้อมูลและตารางเบื้องต้นสำหรับ Coding Sprint 1 (wk05)
--- ครอบคลุมเฉพาะ UC-01 "รับออเดอร์และคำนวณราคา" (US-01, US-02 ส่วนลด, US-03 เช็คสต็อก)
-
 CREATE DATABASE IF NOT EXISTS cafe_pos_db;
 USE cafe_pos_db;
 
@@ -19,7 +15,6 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 
 -- ตารางรายการสินค้าในแต่ละออเดอร์ (แยกเก็บทีละชิ้น ไม่รวมเป็นยอดเดียว
--- ตามที่ wk05 คำถามท้ายบทข้อ 5 ชี้ให้เห็นปัญหาของการเก็บแค่ total_amount)
 CREATE TABLE IF NOT EXISTS order_items (
   id INT AUTO_INCREMENT PRIMARY KEY,
   order_id INT NOT NULL,
