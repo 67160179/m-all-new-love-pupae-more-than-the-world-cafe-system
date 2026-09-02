@@ -2,6 +2,7 @@ const pool = require("../config/db");
 const orderModel = require("../models/orderModel");
 const stockModel = require("../models/stockModel");
 const discountModel = require("../models/discountModel");
+const { Order } = require("../models/Order");
 
 const VALID_PAYMENT_METHODS = ["cash", "qr"];
 
@@ -60,14 +61,15 @@ exports.createOrder = async (req, res) => {
       }
     }
 
-    // ---- US-01: คำนวณยอดรวมก่อนหักส่วนลด ----
-    const subtotalAmount = items.reduce(
-      (sum, item) => sum + item.price * item.quantity,
-      0,
-    );
+    // ---- หมายเลขคิว: ใช้จำนวนออเดอร์ที่มีอยู่ + 1 อย่างง่ายสำหรับ sprint นี้ ----
+    const currentOrderCount = await orderModel.countAll(connection);
+    const queueNumber = currentOrderCount + 1;
+
+    // ---- wk06: ใช้ class Order/OrderItem แทนการคำนวณ inline (Encapsulation) ----
+    const order = new Order(paymentMethod, queueNumber);
+    items.forEach((item) => order.addItem(item, item.quantity));
 
     // ---- US-02: ตรวจสอบและคำนวณส่วนลด (ถ้ามีการส่งรหัสมา) ----
-    let discountAmount = 0;
     let appliedDiscountCode = null;
 
     if (discountCode !== undefined && discountCode !== null && discountCode !== "") {
@@ -79,15 +81,14 @@ exports.createOrder = async (req, res) => {
           .json({ error: "รหัสส่วนลดไม่ถูกต้องหรือหมดอายุ" });
       }
 
+      order.applyDiscount(discountRow);
       appliedDiscountCode = discountRow.code;
-      discountAmount = +((subtotalAmount * discountRow.percent_off) / 100).toFixed(2);
     }
 
-    const totalAmount = +(subtotalAmount - discountAmount).toFixed(2);
-
-    // ---- หมายเลขคิว: ใช้จำนวนออเดอร์ที่มีอยู่ + 1 อย่างง่ายสำหรับ sprint นี้ ----
-    const currentOrderCount = await orderModel.countAll(connection);
-    const queueNumber = currentOrderCount + 1;
+    // ---- US-01: คำนวณยอดรวมผ่าน method ของ class Order แทน reduce เดิม ----
+    const subtotalAmount = order.calculateSubtotal();
+    const discountAmount = order.calculateDiscountAmount();
+    const totalAmount = order.calculateTotal();
 
     await connection.beginTransaction();
 
