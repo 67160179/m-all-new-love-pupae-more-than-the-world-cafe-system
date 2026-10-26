@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cafe POS</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>☕ Cafe POS</h1>
+  <nav>
+    <button data-s="pos" class="on">รับออเดอร์</button>
+    <button data-s="menu">จัดการเมนู</button>
+    <button data-s="report">รายงานยอดขาย</button>
+  </nav>
+  <label>สาขา <select id="branch"></select></label>
+</header>
+<main>
+<div id="msg"></div>
+
+<!-- หน้า 1: POS -->
+<section id="pos" class="screen on">
+  <div class="grid">
+    <div><h2>เมนู</h2><div id="cards" class="cards"></div></div>
+    <div class="panel">
+      <h2>ตะกร้า</h2>
+      <table><thead><tr><th>รายการ</th><th class="n">จำนวน</th><th class="n">รวม</th><th></th></tr></thead><tbody id="cart"></tbody></table>
+      <div class="field"><label>รหัสส่วนลด (ถ้ามี)</label><input id="disc" placeholder="เช่น WELCOME10"></div>
+      <div class="field"><label>วิธีชำระเงิน</label><select id="pay"><option value="cash">เงินสด</option><option value="qr">QR Payment</option></select></div>
+      <div class="field"><label>รหัสพนักงาน</label><input id="emp" type="number" min="1" step="1" value="1" style="width:90px"><div class="err-t" id="empErr"></div></div>
+      <div>ยอดก่อนลด: <span id="sub">0.00</span> | ส่วนลด: <span id="dis">รอตรวจที่ server</span></div>
+      <div class="total">รวม <span id="tot">0.00</span> บาท</div>
+      <button id="confirm" class="btn primary" disabled>ยืนยันออเดอร์</button>
+      <button id="clear" class="btn">ล้างตะกร้า</button>
+      <div id="receipt"></div>
+    </div>
+  </div>
+</section>
+
+<!-- หน้า 2: จัดการเมนู -->
+<section id="menu" class="screen">
+  <h2>จัดการเมนูของสาขา</h2>
+  <div class="panel" style="margin-bottom:12px">
+    <b>เพิ่มเมนูใหม่</b>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+      <input id="nName" placeholder="ชื่อเมนู">
+      <select id="nCat"><option value="1">กาแฟ</option><option value="2">ชา</option><option value="3">เบเกอรี่</option></select>
+      <input id="nPrice" type="number" min="0.01" step="0.01" placeholder="ราคา">
+      <input id="nStock" type="number" min="0" step="1" value="0" style="width:90px" title="สต็อกเริ่มต้น">
+      <button id="nAdd" class="btn primary">เพิ่ม</button>
+    </div>
+    <div class="err-t" id="nErr"></div>
+  </div>
+  <table><thead><tr><th>ชื่อ</th><th class="n">ราคา</th><th class="n">สต็อก</th><th></th></tr></thead><tbody id="mTable"></tbody></table>
+</section>
+
+<!-- หน้า 3: รายงานยอดขาย -->
+<section id="report" class="screen">
+  <h2>รายงานยอดขาย (Summary Report) <button class="btn" id="rReload">รีเฟรช</button></h2>
+  <div class="stats">
+    <div class="panel">ยอดขายรวม<b id="rTotal">0</b></div>
+    <div class="panel">จำนวนออเดอร์<b id="rCount">0</b></div>
+    <div class="panel">เฉลี่ยต่อออเดอร์<b id="rAvg">0</b></div>
+    <div class="panel">เงินสด / QR<b id="rPay">0 / 0</b></div>
+  </div>
+  <p style="font-size:13px;color:#665">สรุปยอดขายจาก <code>GET /api/orders</code> กรองตามสาขา</p>
+  <table><thead><tr><th>คิว</th><th>เวลา</th><th>ชำระ</th><th>ส่วนลด</th><th class="n">ยอดสุทธิ</th></tr></thead><tbody id="rTable"></tbody></table>
+</section>
+</main>
+
+<script>
+const BRANCHES = [{id:1,name:"สาขา 1"},{id:2,name:"สาขา 2"}];
+const LOW_STOCK = 10;
+const $ = id => document.getElementById(id);
+const baht = n => Number(n).toFixed(2);
+let menu = [], cart = {};
+
+const branchSel = $("branch");
+BRANCHES.forEach(b => branchSel.add(new Option(b.name, b.id)));
+branchSel.value = localStorage.getItem("branchId") || "1";
+const branchId = () => Number(branchSel.value);
+
+function say(text, ok) { const m = $("msg"); m.textContent = text; m.className = ok ? "ok" : "err"; clearTimeout(say.t); say.t = setTimeout(() => m.className = "", 5000); }
+async function api(path, opts) {
+  const res = await fetch(path, opts && opts.body ? { ...opts, headers: { "Content-Type": "application/json" } } : opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "เกิดข้อผิดพลาด (" + res.status + ")");
+  return data;
+}
+
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll(".screen").forEach(s => s.classList.toggle("on", s.id === b.dataset.s));
+  refresh();
+});
+branchSel.onchange = () => { localStorage.setItem("branchId", branchSel.value); cart = {}; $("receipt").innerHTML = ""; refresh(); };
+
+async function loadMenu() { menu = await api("/api/menu?branchId=" + branchId()); }
+async function refresh() {
+  try {
+    await loadMenu();
+    renderCards(); renderCart(); renderMenuTable();
+    if ($("report").classList.contains("on")) await loadReport();
+  } catch (e) { say(e.message); }
+}
+
+function renderCards() {
+  $("cards").innerHTML = "";
+  menu.forEach(m => {
+    const inCart = cart[m.menu_id] || 0, out = m.stock_quantity <= 0;
+    const d = document.createElement("div");
+    d.className = "card" + (out ? " out" : "");
+    d.innerHTML = `<b>${esc(m.name)}</b><div class="meta">${baht(m.price)} บาท</div>
+      <div class="meta ${m.stock_quantity < LOW_STOCK ? "warn" : ""}">${out ? "หมด" : (m.stock_quantity < LOW_STOCK ? "⚠ " : "") + "เหลือ " + m.stock_quantity}</div>`;
+    const add = document.createElement("button");
+    add.className = "btn"; add.textContent = "+ เพิ่ม"; add.disabled = out;
+    add.onclick = () => {
+      if (inCart + 1 > m.stock_quantity) return say("สต็อก \"" + m.name + "\" ไม่พอ");
+      cart[m.menu_id] = inCart + 1; renderCards(); renderCart();
+    };
+    d.appendChild(add); $("cards").appendChild(d);
+  });
+}
+
+function renderCart() {
+  const body = $("cart"); body.innerHTML = ""; let sub = 0, count = 0;
+  Object.entries(cart).forEach(([id, q]) => {
+    const m = menu.find(x => x.menu_id == id); if (!m) return;
+    sub += q * m.price; count++;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(m.name)}</td><td class="n"><input type="number" min="1" step="1" value="${q}" style="width:60px"></td><td class="n">${baht(q * m.price)}</td><td><button class="btn">✕</button></td>`;
+    const inp = tr.querySelector("input");
+    inp.onchange = () => {
+      const v = Number(inp.value);
+      if (!Number.isInteger(v) || v <= 0) { inp.classList.add("bad"); return say("จำนวนต้องเป็นจำนวนเต็มมากกว่า 0"); }
+      if (v > m.stock_quantity) { inp.classList.add("bad"); return say("สต็อกไม่พอ เหลือ " + m.stock_quantity); }
+      cart[id] = v; renderCards(); renderCart();
+    };
+    tr.querySelector("button").onclick = () => { delete cart[id]; renderCards(); renderCart(); };
+    body.appendChild(tr);
+  });
+  $("sub").textContent = baht(sub); $("tot").textContent = baht(sub);
+  $("confirm").disabled = count === 0;
+}
+
+$("clear").onclick = () => { cart = {}; renderCards(); renderCart(); };
+$("confirm").onclick = async () => {
+  const employeeId = Number($("emp").value);
+  if (!Number.isInteger(employeeId) || employeeId <= 0) { $("emp").classList.add("bad"); $("empErr").textContent = "ต้องเป็นจำนวนเต็มมากกว่า 0"; return; }
+  $("emp").classList.remove("bad"); $("empErr").textContent = "";
+  const items = Object.entries(cart).map(([id, q]) => ({ menuId: Number(id), quantity: q }));
+  const body = { items, paymentMethod: $("pay").value, employeeId, branchId: branchId() };
+  if ($("disc").value.trim()) body.discountCode = $("disc").value.trim();
+  $("confirm").disabled = true; $("confirm").textContent = "กำลังบันทึก...";
+  try {
+    const r = await api("/api/orders", { method: "POST", body: JSON.stringify(body) });
+    const lines = items.map(i => { const m = menu.find(x => x.menu_id === i.menuId); return `${m.name.padEnd(14)} ${String(i.quantity).padStart(3)} x ${baht(m.price).padStart(7)}`; });
+    $("receipt").innerHTML = `<div class="receipt">${esc(["Cafe POS  สาขา " + branchId(), "คิวที่ " + r.queueNumber + "   ออเดอร์ #" + r.orderId, "-".repeat(32), ...lines, "-".repeat(32),
+      r.discountAmount ? "ส่วนลด " + baht(r.discountAmount) : "", "รวมสุทธิ " + baht(r.totalAmount) + " บาท", "ชำระ: " + (body.paymentMethod === "cash" ? "เงินสด" : "QR")].filter(Boolean).join("\n"))}</div>`;
+    say("บันทึกสำเร็จ คิวที่ " + r.queueNumber + (r.lowStockMenuIds && r.lowStockMenuIds.length ? " | ⚠ สต็อกต่ำ เมนู id: " + r.lowStockMenuIds.join(",") : ""), true);
+    cart = {}; $("disc").value = ""; await refresh();
+  } catch (e) { say(e.message); }
+  $("confirm").textContent = "ยืนยันออเดอร์"; renderCart();
+};
+
+function renderMenuTable() {
+  const b = $("mTable"); b.innerHTML = "";
+  menu.forEach(m => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td><input value="${esc(m.name)}"></td><td class="n"><input type="number" min="0.01" step="0.01" value="${m.price}" style="width:90px"></td><td class="n"><input type="number" min="0" step="1" value="${m.stock_quantity}" style="width:80px"></td><td><button class="btn primary">บันทึก</button> <button class="btn danger">ลบ</button></td>`;
+    const [n, p, s] = tr.querySelectorAll("input");
+    tr.querySelector(".primary").onclick = async () => {
+      if (!n.value.trim() || !(Number(p.value) > 0) || !Number.isInteger(Number(s.value)) || Number(s.value) < 0) return say("ตรวจชื่อ ราคา (> 0) และสต็อก (จำนวนเต็ม ≥ 0)");
+      try { await api("/api/menu/" + m.menu_id, { method: "PATCH", body: JSON.stringify({ branchId: branchId(), name: n.value, price: Number(p.value), stockQuantity: Number(s.value) }) }); say("แก้ไขแล้ว", true); refresh(); } catch (e) { say(e.message); }
+    };
+    tr.querySelector(".danger").onclick = async () => {
+      if (!confirm("ลบเมนู \"" + m.name + "\" ?")) return;
+      try { await api("/api/menu/" + m.menu_id + "?branchId=" + branchId(), { method: "DELETE" }); say("ลบแล้ว", true); refresh(); } catch (e) { say(e.message); }
+    };
+    b.appendChild(tr);
+  });
+}
+
+$("nAdd").onclick = async () => {
+  const name = $("nName").value.trim(), price = Number($("nPrice").value), stock = Number($("nStock").value);
+  $("nErr").textContent = !name ? "ต้องระบุชื่อเมนู" : !(price > 0) ? "ราคาต้องมากกว่า 0" : (!Number.isInteger(stock) || stock < 0) ? "สต็อกต้องเป็นจำนวนเต็ม ≥ 0" : "";
+  if ($("nErr").textContent) return;
+  try { await api("/api/menu", { method: "POST", body: JSON.stringify({ branchId: branchId(), categoryId: Number($("nCat").value), name, price, stockQuantity: stock }) }); $("nName").value = ""; $("nPrice").value = ""; say("เพิ่มเมนูแล้ว", true); refresh(); } catch (e) { say(e.message); }
+};
+
+async function loadReport() {
+  const all = await api("/api/orders");
+  const rows = all.filter(o => o.branch_id === branchId());
+  const total = rows.reduce((s, o) => s + Number(o.total_amount), 0);
+  const cash = rows.filter(o => o.payment_method === "cash").length;
+  $("rTotal").textContent = baht(total); $("rCount").textContent = rows.length;
+  $("rAvg").textContent = rows.length ? baht(total / rows.length) : "0.00";
+  $("rPay").textContent = cash + " / " + (rows.length - cash);
+  $("rTable").innerHTML = rows.map(o => `<tr><td>${o.queue_number}</td><td>${new Date(o.created_at).toLocaleString("th-TH")}</td><td>${o.payment_method === "cash" ? "เงินสด" : "QR"}</td><td>${o.discount_code ? esc(o.discount_code) + " (" + Number(o.discount_percent) + "%)" : "-"}</td><td class="n">${baht(o.total_amount)}</td></tr>`).join("") || `<tr><td colspan="5">ยังไม่มีออเดอร์ในสาขานี้</td></tr>`;
+}
+$("rReload").onclick = () => refresh();
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+refresh();
+</script>
+</body>
+</html>

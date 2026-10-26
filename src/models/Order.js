@@ -7,6 +7,7 @@
 
 class OrderItem {
   constructor(item, quantity) {
+    this.menuId = item.menuId; // wk07: order_item อ้างอิง menu_item ด้วย menu_id
     this.name = item.name;
     this.unitPrice = item.price; // snapshot ราคา ณ เวลาสั่ง (ดู wk06.md หัวข้อ 3.2)
     this.quantity = quantity;
@@ -37,7 +38,8 @@ class Order {
 
   applyDiscount(discountRow) {
     this.discountCode = discountRow.code;
-    this.discountPercent = discountRow.percent_off;
+    // DECIMAL จาก mysql2 มาเป็น string จึงแปลงเป็นตัวเลขก่อน
+    this.discountPercent = Number(discountRow.percent_off);
   }
 
   calculateSubtotal() {
