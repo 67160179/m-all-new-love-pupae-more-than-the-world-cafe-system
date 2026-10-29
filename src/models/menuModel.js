@@ -2,6 +2,12 @@ const db = require("../config/db");
 
 const COLUMNS = "menu_id, branch_id, category_id, name, price, stock_quantity";
 
+// Business Rule ข้อ 3 (wk09): สต็อกหลังตัดน้อยกว่า 10 = สต็อกต่ำ
+// รวมไว้ที่เดียว (wk13 หัวข้อ 3.2) — หน้าจอ POS ใช้เกณฑ์เดียวกัน (LOW_STOCK ใน index.html)
+const LOW_STOCK_THRESHOLD = 10;
+exports.LOW_STOCK_THRESHOLD = LOW_STOCK_THRESHOLD;
+exports.isLowStock = (stockQuantity) => stockQuantity < LOW_STOCK_THRESHOLD;
+
 // ค้นหาเมนูตาม id
 exports.findById = async (connection, menuId) => {
   const [rows] = await connection.query(

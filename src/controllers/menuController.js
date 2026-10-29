@@ -6,13 +6,25 @@ const isNonNegInt = (v) => Number.isInteger(v) && v >= 0;
 // query string มาเป็น string เสมอ จึงแปลงเป็นตัวเลขก่อนใช้
 const toInt = (v) => (v === undefined || v === "" ? NaN : Number(v));
 
+// wk13 หัวข้อ 1.3: DB เป็น snake_case แต่ JSON response ต้องเป็น camelCase ตามข้อตกลงทีม
+// price เป็น DECIMAL ซึ่ง mysql2 ส่งมาเป็น string จึงแปลงเป็น number ที่นี่ด้วย
+const toMenuJson = (row) => ({
+  menuId: row.menu_id,
+  branchId: row.branch_id,
+  categoryId: row.category_id,
+  name: row.name,
+  price: Number(row.price),
+  stockQuantity: row.stock_quantity,
+});
+
 exports.listMenu = async (req, res) => {
   const branchId = toInt(req.query.branchId);
   if (!isPositiveInt(branchId)) {
     return res.status(400).json({ error: "ต้องระบุ branchId เป็นตัวเลข" });
   }
   try {
-    res.json(await menuModel.findAllByBranch(branchId));
+    const rows = await menuModel.findAllByBranch(branchId);
+    res.json(rows.map(toMenuJson));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูลเมนู" });
@@ -30,7 +42,7 @@ exports.getMenuById = async (req, res) => {
     if (!menu) {
       return res.status(404).json({ error: `ไม่พบเมนู id ${menuId} ในสาขานี้` });
     }
-    res.json(menu);
+    res.json(toMenuJson(menu));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูลเมนู" });

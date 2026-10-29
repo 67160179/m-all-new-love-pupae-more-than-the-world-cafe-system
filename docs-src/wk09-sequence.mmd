@@ -1,0 +1,73 @@
+%%{init: {'themeVariables': {'activationBorderColor': 'grey', 'activationBkgColor': 'white', 'fontFamily': 'Loma, sans-serif'}}}%%
+sequenceDiagram
+    participant S as พนักงาน
+    participant UI as หน้าจอ POS
+    participant API as Order Controller
+    participant M as Menu/Order Model
+    participant DB as ฐานข้อมูล MySQL
+
+    S->>UI: เลือกเมนู จำนวน และรหัสส่วนลด (ถ้ามี)
+    S->>UI: กดยืนยันออเดอร์
+    activate UI
+    UI->>API: POST /api/orders {items[menuId,quantity], paymentMethod, employeeId, branchId, discountCode?}
+    activate API
+
+    alt ข้อมูลนำเข้าไม่ถูกต้อง (items ว่าง / branchId-employeeId ไม่ใช่ตัวเลข / paymentMethod ผิด / menuId-quantity ไม่ใช่จำนวนเต็ม > 0)
+        API-->>UI: 400 Bad Request {error}
+        UI-->>S: แสดงข้อความแจ้งเตือน
+    else ข้อมูลนำเข้าถูกต้องครบถ้วน
+        API->>API: รวมจำนวนของเมนูเดียวกัน (quantityByMenuId)
+        API->>M: findManyForStockCheck(menuIds, branchId, forUpdate)
+        activate M
+        M->>DB: BEGIN
+        M->>DB: SELECT menu_id, name, price, stock_quantity FROM menu_item WHERE menu_id IN (...) AND branch_id = ? FOR UPDATE
+        activate DB
+        DB-->>M: ราคาและสต็อกคงเหลือ (ล็อกแถวไว้)
+        deactivate DB
+        M-->>API: รายการราคา/สต็อกต่อเมนู
+        deactivate M
+        API->>API: ตรวจสอบสต็อกเพียงพอทุกเมนูที่รวมแล้ว (ไม่พบเมนูในสาขา = ไม่เพียงพอ)
+
+        alt สต็อกไม่เพียงพอ / ไม่พบเมนูในสาขานี้
+            API->>M: ROLLBACK
+            API-->>UI: 400 Bad Request {error: "สต็อกไม่เพียงพอสำหรับเมนู id ..."}
+            UI-->>S: แสดงข้อความแจ้งเตือน
+        else สต็อกเพียงพอทุกเมนู
+            opt มีรหัสส่วนลด
+                API->>M: discountModel.findByCode(discountCode)
+                M->>DB: SELECT FROM discount_code WHERE code = ?
+                DB-->>M: percent_off, expires_at
+                M-->>API: แถวส่วนลด
+            end
+
+            alt รหัสส่วนลดไม่ถูกต้องหรือหมดอายุ
+                API->>M: ROLLBACK
+                API-->>UI: 400 Bad Request {error: "รหัสส่วนลดไม่ถูกต้องหรือหมดอายุ"}
+                UI-->>S: แสดงข้อความแจ้งเตือน
+            else ส่วนลดใช้ได้ หรือไม่มีส่วนลด
+                API->>M: orderModel.create(branchId, employeeId, paymentMethod, discount)
+                activate M
+                M->>DB: INSERT INTO orders
+                activate DB
+                DB-->>M: orderId
+
+                loop แต่ละรายการใน items
+                    API->>M: orderModel.addItem(orderId, menuId, quantity, unitPrice จาก DB)
+                    M->>DB: INSERT INTO order_item
+                    API->>M: menuModel.deductStock(menuId, quantity)
+                    M->>DB: UPDATE menu_item SET stock_quantity = stock_quantity - ? WHERE stock_quantity - ? >= 0
+                    M->>DB: INSERT INTO stock_movement
+                end
+
+                M->>DB: COMMIT
+                deactivate DB
+                M-->>API: orderId
+                deactivate M
+                API->>API: คำนวณยอดรวม/ส่วนลด และตรวจสต็อกต่ำกว่า 10 หลังตัด (lowStockMenuIds)
+                API-->>UI: 201 Created {orderId, queueNumber, totalAmount, lowStockMenuIds}
+                UI-->>S: แสดงใบเสร็จ
+            end
+        end
+    end
+    deactivate API
+    deactivate UI
