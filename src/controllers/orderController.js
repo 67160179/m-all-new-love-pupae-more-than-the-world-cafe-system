@@ -44,16 +44,31 @@ exports.createOrder = async (req, res) => {
   if (!VALID_PAYMENT_METHODS.includes(paymentMethod)) {
     return res.status(400).json({ error: "paymentMethod ไม่ถูกต้อง" });
   }
-
-  // รวมเมนูเดียวกันที่ส่งมาซ้ำให้เป็นรายการเดียว
-  const quantities = new Map();
-  for (const { menuId, quantity } of items) {
-    quantities.set(menuId, (quantities.get(menuId) || 0) + quantity);
+  // discountCode ต้องเป็น string เท่านั้น (ถ้าส่งมา) — ถ้าเป็นตัวเลข 0/false ที่ส่งเข้า query
+  // MySQL จะเทียบ `code = 0` แล้วแปลงรหัสที่เป็นตัวอักษรเป็น 0 ทำให้ตรงกับทุกรหัส (ได้ส่วนลดโดยไม่รู้รหัส)
+  if (
+    discountCode !== undefined &&
+    discountCode !== null &&
+    (typeof discountCode !== "string" || discountCode.length > 50)
+  ) {
+    return res.status(400).json({ error: "รหัสส่วนลดไม่ถูกต้องหรือหมดอายุ" });
   }
 
-  const connection = await pool.getConnection();
+  // รวมเมนูเดียวกันที่ส่งมาซ้ำให้เป็นรายการเดียว
+  const merged = new Map();
+  for (const { menuId, quantity } of items) {
+    merged.set(menuId, (merged.get(menuId) || 0) + quantity);
+  }
+  // เรียง menuId จากน้อยไปมากก่อนล็อก (FOR UPDATE) เพื่อให้ทุก transaction ล็อกแถวตามลำดับเดียวกัน
+  // กัน deadlock เมื่อสองออเดอร์สั่งเมนูชุดเดียวกันแต่เรียงต่างกัน (เช่น [1,2] กับ [2,1])
+  const quantities = new Map([...merged.entries()].sort((a, b) => a[0] - b[0]));
+
+  let connection;
 
   try {
+    // getConnection อยู่ใน try เพื่อให้ error (เช่น DB ล่ม) ถูกจับและตอบ 500
+    // แทนที่จะเป็น unhandled rejection ที่ทำให้ request ค้างหรือ process ล้ม
+    connection = await pool.getConnection();
     await connection.beginTransaction();
 
     // ---- พนักงานต้องมีอยู่จริงและอยู่สาขานี้ ----
@@ -145,7 +160,13 @@ exports.createOrder = async (req, res) => {
       lowStockMenuIds,
     });
   } catch (error) {
-    await connection.rollback();
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error("createOrder rollback error:", rollbackError);
+      }
+    }
     if (error instanceof HttpError) {
       return res.status(error.status).json({ error: error.message });
     }
@@ -155,7 +176,7 @@ exports.createOrder = async (req, res) => {
       .status(500)
       .json({ error: "เกิดข้อผิดพลาดระหว่างบันทึกออเดอร์ กรุณาลองใหม่อีกครั้ง" });
   } finally {
-    connection.release();
+    if (connection) connection.release();
   }
 };
 
