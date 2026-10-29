@@ -1,0 +1,22 @@
+%%{init: {'themeVariables': {'fontFamily': 'Loma, sans-serif'}}}%%
+flowchart TD
+    Start([เริ่มยืนยันออเดอร์]) --> Valid{ข้อมูลนำเข้า<br/>ถูกต้องหรือไม่}
+    Valid -->|ไม่ถูกต้อง| Bad[400 แจ้งข้อมูลไม่ถูกต้อง]
+    Bad --> End([จบ])
+    Valid -->|ถูกต้อง| Merge[รวมจำนวนเมนูเดียวกัน<br/>แล้วอ่านราคา/สต็อกจาก DB<br/>ภายใน transaction]
+    Merge --> Check{สต็อกเพียงพอ<br/>ทุกเมนูหรือไม่}
+    Check -->|ไม่เพียงพอ| Reject[ROLLBACK + 400<br/>ระบุเมนูที่สต็อกไม่พอ]
+    Reject --> End
+    Check -->|เพียงพอ| Disc{ส่งรหัสส่วนลดมาหรือไม่}
+    Disc -->|ไม่ส่ง| Save
+    Disc -->|ส่ง| DiscOk{รหัสถูกต้อง<br/>และยังไม่หมดอายุ}
+    DiscOk -->|ไม่| RejectD[ROLLBACK + 400<br/>รหัสส่วนลดไม่ถูกต้อง]
+    RejectD --> End
+    DiscOk -->|ใช่| Save[บันทึกออเดอร์และรายการสินค้า<br/>ใช้ราคาจาก DB]
+    Save --> Deduct[ตัดสต็อกทุกรายการ<br/>+ บันทึก stock_movement]
+    Deduct --> Commit[COMMIT]
+    Commit --> CheckLow{สต็อกคงเหลือหลังตัด<br/>น้อยกว่า 10 หรือไม่}
+    CheckLow -->|น้อยกว่า 10| Alert[ใส่ใน lowStockMenuIds<br/>และ console.warn]
+    CheckLow -->|มากกว่าหรือเท่ากับ 10| Receipt[ตอบ 201 ออกใบเสร็จ]
+    Alert --> Receipt
+    Receipt --> End

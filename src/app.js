@@ -3,6 +3,7 @@ const path = require("path");
 const express = require("express");
 const orderRoutes = require("./routes/orderRoutes");
 const menuRoutes = require("./routes/menuRoutes");
+const reportRoutes = require("./routes/reportRoutes");
 
 const app = express();
 app.use(express.json());
@@ -17,6 +18,7 @@ app.get("/", (req, res) => {
 
 app.use("/api", orderRoutes);
 app.use("/api/menu", menuRoutes);
+app.use("/api/reports", reportRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

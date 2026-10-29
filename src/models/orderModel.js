@@ -55,6 +55,15 @@ exports.findAll = async () => {
   return rows;
 };
 
+// ออเดอร์ของสาขาเดียวพร้อมยอดที่คำนวณสด
+exports.findAllByBranch = async (branchId) => {
+  const [rows] = await db.query(
+    `${TOTALS_SQL} WHERE o.branch_id = ? GROUP BY o.order_id ORDER BY o.created_at DESC`,
+    [branchId],
+  );
+  return rows;
+};
+
 // ออเดอร์เดียวพร้อมรายการสินค้า (ไม่พบ = null)
 exports.findById = async (orderId) => {
   const [orders] = await db.query(

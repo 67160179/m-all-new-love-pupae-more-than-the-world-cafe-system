@@ -6,7 +6,6 @@ const menuModel = require("../models/menuModel");
 const { Order } = require("../models/Order");
 
 const VALID_PAYMENT_METHODS = ["cash", "qr"];
-const LOW_STOCK_THRESHOLD = 5; // เหลือน้อยกว่าหรือเท่ากับนี้ = แจ้งเตือนสต็อกต่ำ
 
 const isPositiveInt = (v) => Number.isInteger(v) && v > 0;
 
@@ -77,9 +76,10 @@ exports.createOrder = async (req, res) => {
       if (!menu) {
         throw new HttpError(400, `ไม่พบเมนู id ${menuId} ในสาขานี้`);
       }
+      // Business Rule ข้อ 1: สต็อกไม่พอ → 400 ตาม API contract (wk09/wk13)
       if (menu.stock_quantity < quantity) {
         throw new HttpError(
-          409,
+          400,
           `สินค้า "${menu.name}" ไม่พร้อมจำหน่าย (สต็อกเหลือ ${menu.stock_quantity})`,
         );
       }
@@ -123,11 +123,14 @@ exports.createOrder = async (req, res) => {
       await orderModel.addItem(connection, orderId, item);
       const ok = await menuModel.adjustStock(connection, item.menuId, -item.quantity);
       if (!ok) {
-        throw new HttpError(409, `สินค้า "${item.name}" สต็อกไม่เพียงพอ`);
+        throw new HttpError(400, `สินค้า "${item.name}" สต็อกไม่เพียงพอ`);
       }
       const remaining = menus.find((m) => m.menu.menu_id === item.menuId).menu.stock_quantity
         - item.quantity;
-      if (remaining <= LOW_STOCK_THRESHOLD) lowStockMenuIds.push(item.menuId);
+      if (menuModel.isLowStock(remaining)) lowStockMenuIds.push(item.menuId);
+    }
+    if (lowStockMenuIds.length > 0) {
+      console.warn(`สาขา ${branchId} สต็อกต่ำ เมนู id: ${lowStockMenuIds.join(", ")}`);
     }
 
     await connection.commit();
@@ -156,14 +159,38 @@ exports.createOrder = async (req, res) => {
   }
 };
 
+// แปลงแถวออเดอร์ (snake_case) เป็น JSON camelCase ตามข้อตกลงทีม (wk13 หัวข้อ 1.3)
+// ยอดเงินเป็น DECIMAL ซึ่ง mysql2 ส่งมาเป็น string จึงแปลงเป็น number ที่ backend
+const toOrderJson = (row) => ({
+  orderId: row.order_id,
+  branchId: row.branch_id,
+  employeeId: row.employee_id,
+  queueNumber: row.queue_number,
+  paymentMethod: row.payment_method,
+  status: row.status,
+  discountCode: row.discount_code,
+  discountPercent: Number(row.discount_percent),
+  createdAt: row.created_at,
+  subtotalAmount: Number(row.subtotal_amount),
+  discountAmount: Number(row.discount_amount),
+  totalAmount: Number(row.total_amount),
+});
+
 /**
- * GET /api/orders
- * ดึงออเดอร์ทั้งหมดพร้อมยอดรวม (หน้า "รายงานยอดขาย" ใช้)
+ * GET /api/orders?branchId=1
+ * ดึงออเดอร์ของสาขาพร้อมยอดรวม (หน้า "รายงานยอดขาย" ใช้)
+ * Business Rule ข้อ 5: กรอง branch_id ที่ฝั่ง server เสมอ ไม่ส่งออเดอร์ทุกสาขาให้ frontend กรองเอง
  */
 exports.getAllOrders = async (req, res) => {
+  const branchId = req.query.branchId === undefined || req.query.branchId === ""
+    ? NaN
+    : Number(req.query.branchId);
+  if (!isPositiveInt(branchId)) {
+    return res.status(400).json({ error: "ต้องระบุ branchId เป็นตัวเลข" });
+  }
   try {
-    const orders = await orderModel.findAll();
-    return res.json(orders);
+    const orders = await orderModel.findAllByBranch(branchId);
+    return res.json(orders.map(toOrderJson));
   } catch (error) {
     console.error("getAllOrders error:", error);
     return res.status(500).json({ error: "ไม่สามารถดึงข้อมูลออเดอร์ได้" });
